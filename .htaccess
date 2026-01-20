@@ -1,0 +1,29 @@
+# ...existing code...
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Base da aplicação (ajuste se necessário)
+    RewriteBase /code/cipa_t1/
+
+    # Evitar listagem de diretório
+    Options -Indexes
+
+    # Bloquear arquivos sensíveis
+    <FilesMatch "\.(env|ini|phar|lock|json|md|log|sqlite|yaml|yml|git|sh)$">
+        Require all denied
+    </FilesMatch>
+
+    # Permitir acesso direto a arquivos e pastas existentes
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Enviar todas as requisições para o front-controller index.php
+    RewriteRule ^ index.php [L,QSA]
+</IfModule>
+
+<IfModule !mod_rewrite.c>
+    # Fallback quando mod_rewrite não estiver disponível
+    ErrorDocument 404 /code/cipa_t1/index.php
+</IfModule>
+
