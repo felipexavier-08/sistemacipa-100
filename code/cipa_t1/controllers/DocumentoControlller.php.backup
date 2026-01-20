@@ -1,0 +1,193 @@
+<?php
+    require_once  __DIR__ . "/../models/Documento.php";
+    require_once __DIR__ . "/../utils/Util.php";
+    require_once  __DIR__ . "/../repositories/DocumentoDAO.php";
+
+    class DocumentoControlller {
+        private ?DocumentoDAO $dao;
+        public function __construct() {
+            $this->dao = new DocumentoDAO();            
+            if (session_status() === PHP_SESSION_NONE) {
+                session_start();
+            }
+        }
+
+        public function buscarTodosDocumento($requisicao) {
+            if ($requisicao === "GET") {
+                $resposta = $this->dao->buscarTodos();
+                
+                if (!empty($resposta)) {
+                    $resposta = Util::converterArrayDoc($resposta);
+                    $_SESSION["documentos"] = $resposta;
+                } else {
+                    $_SESSION["documentos"] = [];
+                }
+                include "./views/documento/lista.php";
+            }
+        }
+
+        
+
+        /**
+         * Cria um novo documento no sistema
+         * GET: Exibe o formulário de cadastro
+         * POST: Processa o cadastro do documento
+         */
+        public function criarDocumento($requisicao) {
+            if ($requisicao === "GET") {
+                // Limpar mensagens de erro anteriores
+                unset($_SESSION['erro_documento']);
+                include "./views/documento/cadastrar.php";
+                return;
+            }
+
+            if ($requisicao === "POST") {
+                // Validar dados obrigatórios
+                if (empty($_POST["tituloDocumento"]) || empty($_POST["tipoDocumento"]) || 
+                    empty($_POST["dataInicioDocumento"]) || empty($_POST["dataFimDocumento"])) {
+                    $_SESSION['erro_documento'] = "Todos os campos são obrigatórios.";
+                    include "./views/documento/cadastrar.php";
+                    return;
+                }
+
+                // Verificar se o arquivo foi enviado
+                if (!isset($_FILES["pdfDocumento"]) || $_FILES["pdfDocumento"]["error"] !== UPLOAD_ERR_OK) {
+                    $_SESSION['erro_documento'] = "Erro ao enviar arquivo. Por favor, verifique se selecionou um arquivo PDF válido.";
+                    include "./views/documento/cadastrar.php";
+                    return;
+                }
+
+                // Salvar o arquivo PDF
+                $caminhoArquivo = $this->salvarPdf();
+                
+                if (!$caminhoArquivo) {
+                    $_SESSION['erro_documento'] = "Erro ao salvar o arquivo PDF. Verifique as permissões da pasta uploads.";
+                    include "./views/documento/cadastrar.php";
+                    return;
+                }
+
+                // Validar tipo de documento
+                $tipoDocumento = trim($_POST["tipoDocumento"]);
+                if (!in_array($tipoDocumento, ['Ata', 'Edital'])) {
+                    $_SESSION['erro_documento'] = "Tipo de documento inválido. Use 'Ata' ou 'Edital'.";
+                    include "./views/documento/cadastrar.php";
+                    return;
+                }
+
+                // Criar objeto Documento
+                $documento = new Documento(                    
+                    $_POST["dataInicioDocumento"],
+                    $_POST["dataFimDocumento"],
+                    trim($_POST["tituloDocumento"]),
+                    $tipoDocumento,
+                    $caminhoArquivo
+                );
+
+                // Inserir no banco de dados
+                $resposta = $this->dao->inserir($documento);
+                
+                if ($resposta) {
+                    unset($_SESSION['erro_documento']);
+                    header("Location: /code/cipa_t1/");
+                    exit;
+                } else {
+                    $_SESSION['erro_documento'] = "Erro ao cadastrar documento no banco de dados. Tente novamente.";
+                    include "./views/documento/cadastrar.php";
+                }
+            }
+        }
+
+        /**
+         * Salva o arquivo PDF enviado no servidor
+         * @return string|null Caminho relativo do arquivo salvo ou null em caso de erro
+         */
+        private function salvarPdf() {
+            require_once __DIR__ . "/../utils/FileUpload.php";
+            
+            // Definir caminhos das pastas
+            $pastaBase = __DIR__ . "/../uploads";
+            $pastaDestino = $pastaBase . "/pdf";
+            $arquivo = $_FILES["pdfDocumento"];
+            
+            // Verificar se há erro no upload
+            if ($arquivo["error"] !== UPLOAD_ERR_OK) {
+                error_log("Erro no upload do arquivo. Código: " . $arquivo["error"]);
+                return null;
+            }
+            
+            // Validar se é PDF
+            if (!FileUpload::validarPdf($arquivo)) {
+                error_log("Tentativa de upload de arquivo não-PDF: " . $arquivo["name"]);
+                return null;
+            }
+            
+            // Garantir que as pastas existem e têm permissões corretas
+            if (!FileUpload::garantirPasta($pastaBase)) {
+                error_log("Erro ao criar/verificar pasta base: " . $pastaBase);
+                return null;
+            }
+            
+            if (!FileUpload::garantirPasta($pastaDestino)) {
+                error_log("Erro ao criar/verificar pasta de destino: " . $pastaDestino);
+                return null;
+            }
+            
+            // Normalizar caminho da pasta de destino
+            $pastaDestino = rtrim($pastaDestino, '/\\') . DIRECTORY_SEPARATOR;
+
+            // Gerar nome único para o arquivo
+            $extensao = strtolower(pathinfo($arquivo["name"], PATHINFO_EXTENSION));
+            $novoNomeArquivo = uniqid("doc_") . "." . $extensao;
+            $caminhoCompleto = $pastaDestino . $novoNomeArquivo;
+
+            // Mover arquivo para pasta de destino
+            if (move_uploaded_file($arquivo["tmp_name"], $caminhoCompleto)) {
+                // Ajustar permissões do arquivo (Linux/Unix)
+                if (PHP_OS_FAMILY !== 'Windows') {
+                    @chmod($caminhoCompleto, 0644);
+                }
+                // Retornar caminho relativo para salvar no banco de dados
+                return "uploads/pdf/" . $novoNomeArquivo;
+            } else {
+                // Log de erro detalhado
+                $error = error_get_last();
+                $mensagemErro = $error ? $error['message'] : 'Erro desconhecido';
+                error_log("Erro ao salvar PDF: " . $mensagemErro);
+                error_log("Caminho completo: " . $caminhoCompleto);
+                error_log("Arquivo temporário: " . $arquivo["tmp_name"]);
+                return null;
+            }
+        }
+    }
+
+    public function deletarDocumento($requisicao) {
+        if ($requisicao === "GET") {
+            $idDocumento = $_GET['id'] ?? null;
+            
+            if (!$idDocumento) {
+                $_SESSION['erro_documento'] = "ID do documento não informado.";
+                header("Location: /code/cipa_t1/documento/listar");
+                exit;
+            }
+
+            // Verificar se documento está vinculado a alguma eleição
+            if ($this->dao->estaVinculadoAEleicao($idDocumento)) {
+                $_SESSION['erro_documento'] = "Não é possível excluir este documento pois está vinculado a uma eleição.";
+                header("Location: /code/cipa_t1/documento/listar");
+                exit;
+            }
+
+            // Excluir documento
+            $resultado = $this->dao->deletar($idDocumento);
+            
+            if ($resultado) {
+                $_SESSION['sucesso_documento'] = "Documento excluído com sucesso!";
+            } else {
+                $_SESSION['erro_documento'] = "Erro ao excluir documento. Tente novamente.";
+            }
+            
+            header("Location: /code/cipa_t1/documento/listar");
+            exit;
+        }
+    }
+}
